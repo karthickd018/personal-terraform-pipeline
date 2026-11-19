@@ -135,24 +135,24 @@ data "aws_iam_policy_document" "kms_key_policy" {
     }
   }
 
-  # AWS Chatbot service-linked role — decrypt KMS-encrypted SNS messages
-  #
-  # The correct principal is the SLR ARN, NOT chatbot.amazonaws.com service principal.
-  # Chatbot uses its SLR internally to process notifications received from SNS.
-  # The chatbot.amazonaws.com service principal has no KMS permissions because it
-  # never calls KMS directly — the SLR is what does the decryption.
-  statement {
-    sid    = "AllowChatbotSLRDecrypt"
-    effect = "Allow"
-    principals {
-      type        = "AWS"
-      identifiers = ["arn:aws:iam::${var.ACCOUNT_ID}:role/aws-service-role/management.chatbot.amazonaws.com/AWSServiceRoleForAWSChatbot"]
+  # AWS Chatbot service-linked role — only when Chatbot is enabled.
+  # KMS rejects principals that do not exist yet. Personal accounts often
+  # do not have AWSServiceRoleForAWSChatbot until Chatbot is configured.
+  dynamic "statement" {
+    for_each = var.ENABLE_CHATBOT ? [1] : []
+    content {
+      sid    = "AllowChatbotSLRDecrypt"
+      effect = "Allow"
+      principals {
+        type        = "AWS"
+        identifiers = ["arn:aws:iam::${var.ACCOUNT_ID}:role/aws-service-role/management.chatbot.amazonaws.com/AWSServiceRoleForAWSChatbot"]
+      }
+      actions = [
+        "kms:Decrypt",
+        "kms:DescribeKey",
+      ]
+      resources = ["*"]
     }
-    actions = [
-      "kms:Decrypt",
-      "kms:DescribeKey",
-    ]
-    resources = ["*"]
   }
 
 }
