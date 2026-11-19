@@ -1,0 +1,64 @@
+version: 0.2
+
+phases:
+
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      # Terraform version MUST match the plan stage — a mismatch will reject the plan file
+      - curl -sLo /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
+      - unzip -q /tmp/terraform.zip -d /tmp && mv /tmp/terraform /usr/local/bin/terraform && chmod +x /usr/local/bin/terraform
+
+  pre_build:
+    commands:
+      # Ensure AWS-managed Service Linked Roles exist before Terraform applies KMS key policies
+      # that reference them. These commands are idempotent — silently succeed if the SLR already exists.
+      - aws iam create-service-linked-role --aws-service-name route53resolver.amazonaws.com 2>/dev/null || true
+      - aws iam create-service-linked-role --aws-service-name management.chatbot.amazonaws.com 2>/dev/null || true
+
+      - echo "MODULE_PATH=${MODULE_PATH} | PIPELINE_EXECUTION_ID=${PIPELINE_EXECUTION_ID}"
+
+      # Validate required variables
+      - |
+        if [ -z "${MODULE_PATH}" ] || [ -z "${PIPELINE_EXECUTION_ID}" ]; then
+          echo "ERROR: MODULE_PATH or PIPELINE_EXECUTION_ID is empty."
+          exit 1
+        fi
+
+      # Confirm module directory exists in source
+      - |
+        if [ ! -d "${CODEBUILD_SRC_DIR}/${MODULE_PATH}" ]; then
+          echo "ERROR: Directory '${MODULE_PATH}' not found in repository."
+          exit 1
+        fi
+
+      # Download the approved plan from S3 (same PIPELINE_EXECUTION_ID as the plan stage)
+      - aws s3 cp "s3://${PIPELINE_BUCKET}/plans/${MODULE_PATH}/${PIPELINE_EXECUTION_ID}/tfplan" "${CODEBUILD_SRC_DIR}/tfplan"
+
+      # Print the approved plan to the build log for audit trail
+      - |
+        aws s3 cp "s3://${PIPELINE_BUCKET}/plans/${MODULE_PATH}/${PIPELINE_EXECUTION_ID}/tfplan.txt" "${CODEBUILD_SRC_DIR}/tfplan.txt" 2>/dev/null || true
+        [ -f "${CODEBUILD_SRC_DIR}/tfplan.txt" ] && cat "${CODEBUILD_SRC_DIR}/tfplan.txt"
+
+      # Terraform init
+      - cd "${CODEBUILD_SRC_DIR}/${MODULE_PATH}" && terraform init -input=false
+
+  build:
+    commands:
+      - cd "${CODEBUILD_SRC_DIR}/${MODULE_PATH}"
+
+      # Apply the pre-approved plan — no fresh plan is generated here
+      - terraform apply -input=false "${CODEBUILD_SRC_DIR}/tfplan"
+
+  post_build:
+    commands:
+      - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING}" = "1" ]; then
+          echo "APPLY SUCCEEDED — ${MODULE_PATH}"
+          echo "All infrastructure changes have been applied."
+        else
+          echo "APPLY FAILED — ${MODULE_PATH}"
+          echo "State may be partially applied. Run 'terraform plan' locally to assess drift."
+          echo "State: s3://${EXISTING_BUCKET}/statefile/$(basename ${MODULE_PATH})/terraform.tfstate"
+        fi

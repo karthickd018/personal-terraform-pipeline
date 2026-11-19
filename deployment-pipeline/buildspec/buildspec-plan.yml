@@ -1,0 +1,95 @@
+version: 0.2
+
+phases:
+
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - curl -sLo /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
+      - unzip -q /tmp/terraform.zip -d /tmp && mv /tmp/terraform /usr/local/bin/terraform && chmod +x /usr/local/bin/terraform
+      - |
+        if [ "${ENABLE_CHECKOV}" = "true" ]; then
+          pip install checkov==${CHECKOV_VERSION} --quiet --upgrade
+        else
+          echo "Checkov disabled — skipping installation"
+        fi
+
+  pre_build:
+    commands:
+      - echo "MODULE_PATH=${MODULE_PATH} | PIPELINE_EXECUTION_ID=${PIPELINE_EXECUTION_ID}"
+
+      # Validate MODULE_PATH is set
+      - |
+        if [ -z "${MODULE_PATH}" ]; then
+          echo "ERROR: MODULE_PATH is empty."
+          exit 1
+        fi
+
+      # Derive module name from path (e.g. environment-deployments/dev/dev-s3 -> dev-s3)
+      # Leaf folder names MUST be unique across envs so env/<MODULE_NAME>.tfvars does not collide.
+      - export MODULE_NAME=$(basename "${MODULE_PATH}")
+
+      # Confirm module directory exists in source
+      - |
+        if [ ! -d "${CODEBUILD_SRC_DIR}/${MODULE_PATH}" ]; then
+          echo "ERROR: Directory '${MODULE_PATH}' not found in repository."
+          exit 1
+        fi
+
+      # Download tfvars from S3
+      - aws s3 cp "s3://${EXISTING_BUCKET}/env/${MODULE_NAME}.tfvars" "${CODEBUILD_SRC_DIR}/module.tfvars"
+
+      # Terraform init
+      - cd "${CODEBUILD_SRC_DIR}/${MODULE_PATH}" && terraform init -input=false
+
+  build:
+    commands:
+      - cd "${CODEBUILD_SRC_DIR}/${MODULE_PATH}"
+
+      # Format check
+      - |
+        if [ "${ENABLE_TF_FMT}" = "true" ]; then
+          terraform fmt -check -recursive
+        else
+          echo "Terraform fmt check disabled — skipping"
+        fi
+
+      # Validate HCL syntax
+      - terraform validate
+
+      # Security scan
+      - |
+        if [ "${ENABLE_CHECKOV}" = "true" ]; then
+          if [ "${CHECKOV_HARD_FAIL}" = "true" ]; then
+            checkov --directory "${CODEBUILD_SRC_DIR}/${MODULE_PATH}" --compact --quiet
+          else
+            checkov --directory "${CODEBUILD_SRC_DIR}/${MODULE_PATH}" --compact --quiet || true
+          fi
+        else
+          echo "Checkov disabled — skipping scan"
+        fi
+
+      # Generate plan and save to S3 for the Apply stage
+      - terraform plan -var-file="${CODEBUILD_SRC_DIR}/module.tfvars" -input=false -out="${CODEBUILD_SRC_DIR}/tfplan"
+      - terraform show -no-color "${CODEBUILD_SRC_DIR}/tfplan" > "${CODEBUILD_SRC_DIR}/tfplan.txt"
+      - tail -80 "${CODEBUILD_SRC_DIR}/tfplan.txt"
+      - aws s3 cp "${CODEBUILD_SRC_DIR}/tfplan" "s3://${PIPELINE_BUCKET}/plans/${MODULE_PATH}/${PIPELINE_EXECUTION_ID}/tfplan"
+      - aws s3 cp "${CODEBUILD_SRC_DIR}/tfplan.txt" "s3://${PIPELINE_BUCKET}/plans/${MODULE_PATH}/${PIPELINE_EXECUTION_ID}/tfplan.txt"
+
+  post_build:
+    commands:
+      - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING}" = "1" ]; then
+          echo "PLAN SUCCEEDED — ${MODULE_PATH}"
+          echo "Plan: s3://${PIPELINE_BUCKET}/plans/${MODULE_PATH}/${PIPELINE_EXECUTION_ID}/tfplan.txt"
+          echo "Pipeline will now move to the Approval stage."
+        else
+          echo "PLAN FAILED — ${MODULE_PATH}"
+          echo "Check the build log above for the specific error."
+        fi
+
+artifacts:
+  files:
+    - tfplan.txt
+  base-directory: $CODEBUILD_SRC_DIR
