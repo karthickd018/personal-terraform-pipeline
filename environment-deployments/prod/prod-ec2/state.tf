@@ -1,7 +1,6 @@
 terraform {
   backend "s3" {
-    # REPLACE with your EXISTING_S3_BUCKET and region before first pipeline run
-    bucket = "REPLACE-ME-personal-tf-state-ACCOUNT_ID-REGION"
+    bucket = "staging-terraform-tfstate-bucket"
     key    = "statefile/environment-deployments/prod/prod-ec2/terraform.tfstate"
     region = "ap-south-1"
   }
