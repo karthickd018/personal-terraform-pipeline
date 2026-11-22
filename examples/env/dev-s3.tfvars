@@ -9,4 +9,5 @@ enable_versioning = true
 tags = {
   Project = "personal-terraform-pipeline"
   Owner   = "karthickd018"
+  Purpose = "ci-cd-demo"
 }

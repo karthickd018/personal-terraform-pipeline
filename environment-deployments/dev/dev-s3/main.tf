@@ -1,3 +1,4 @@
+# Dev S3 deployment — used to validate PR plan + controlled deploy
 module "s3" {
   source = "../../../reusable-modules/s3"
 
