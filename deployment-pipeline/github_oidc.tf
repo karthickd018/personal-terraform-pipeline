@@ -37,8 +37,22 @@ locals {
     var.GITHUB_OIDC_PROVIDER_ARN != "" ? data.aws_iam_openid_connect_provider.github[0].arn : aws_iam_openid_connect_provider.github[0].arn
   ) : null
 
-  # GitHub OIDC "sub" uses the repo's canonical owner/name casing.
-  github_repo = var.GITHUB_REPO_ID
+  # GitHub OIDC "sub" formats:
+  #   legacy: repo:owner/name:pull_request
+  #   new:    repo:owner@OWNER_ID/name@REPO_ID:pull_request
+  github_repo      = var.GITHUB_REPO_ID
+  github_repo_owner = split("/", var.GITHUB_REPO_ID)[0]
+  github_repo_name  = split("/", var.GITHUB_REPO_ID)[1]
+
+  # Trust both claim formats GitHub may emit
+  github_sub_pull_like = [
+    "repo:${local.github_repo}:*",
+    "repo:${local.github_repo_owner}@*/${local.github_repo_name}@*:*",
+  ]
+  github_sub_main_like = [
+    "repo:${local.github_repo}:ref:refs/heads/${var.GITHUB_BRANCH}",
+    "repo:${local.github_repo_owner}@*/${local.github_repo_name}@*:ref:refs/heads/${var.GITHUB_BRANCH}",
+  ]
 }
 
 # ── Plan-only role (PR CI) ───────────────────────────────────────
@@ -69,7 +83,7 @@ data "aws_iam_policy_document" "assume_github_plan" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${local.github_repo}:*"]
+      values   = local.github_sub_pull_like
     }
   }
 }
@@ -172,7 +186,7 @@ data "aws_iam_policy_document" "assume_github_deploy" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${local.github_repo}:ref:refs/heads/${var.GITHUB_BRANCH}"]
+      values   = local.github_sub_main_like
     }
   }
 }
