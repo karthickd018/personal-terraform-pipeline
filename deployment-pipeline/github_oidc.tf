@@ -33,6 +33,7 @@ locals {
     var.GITHUB_OIDC_PROVIDER_ARN != "" ? data.aws_iam_openid_connect_provider.github[0].arn : aws_iam_openid_connect_provider.github[0].arn
   ) : null
 
+  # GitHub OIDC "sub" uses the repo's canonical owner/name casing.
   github_repo = var.GITHUB_REPO_ID
 }
 
@@ -42,8 +43,12 @@ data "aws_iam_policy_document" "assume_github_plan" {
   count = var.ENABLE_GITHUB_ACTIONS_CI ? 1 : 0
 
   statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect = "Allow"
+    # TagSession is required by aws-actions/configure-aws-credentials@v4+
+    actions = [
+      "sts:AssumeRoleWithWebIdentity",
+      "sts:TagSession",
+    ]
 
     principals {
       type        = "Federated"
@@ -56,13 +61,11 @@ data "aws_iam_policy_document" "assume_github_plan" {
       values   = ["sts.amazonaws.com"]
     }
 
+    # Allow any workflow in this repo (PR, push, workflow_dispatch, etc.)
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values = [
-        "repo:${local.github_repo}:pull_request",
-        "repo:${local.github_repo}:ref:refs/heads/${var.GITHUB_BRANCH}",
-      ]
+      values   = ["repo:${local.github_repo}:*"]
     }
   }
 }
@@ -144,8 +147,11 @@ data "aws_iam_policy_document" "assume_github_deploy" {
   count = var.ENABLE_GITHUB_ACTIONS_CI ? 1 : 0
 
   statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect = "Allow"
+    actions = [
+      "sts:AssumeRoleWithWebIdentity",
+      "sts:TagSession",
+    ]
 
     principals {
       type        = "Federated"
@@ -158,9 +164,9 @@ data "aws_iam_policy_document" "assume_github_deploy" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # Only main branch workflows may start the deploy pipeline
+    # Only main-branch jobs may start the deploy pipeline
     condition {
-      test     = "StringEquals"
+      test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
       values   = ["repo:${local.github_repo}:ref:refs/heads/${var.GITHUB_BRANCH}"]
     }

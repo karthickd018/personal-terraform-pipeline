@@ -91,15 +91,38 @@ jobs:
       matrix:
         module_path: ${{ fromJson(needs.detect-modules.outputs.modules) }}
     steps:
+      - name: Check required GitHub Actions variables
+        run: |
+          set -euo pipefail
+          missing=0
+          for v in AWS_REGION AWS_DEPLOY_ROLE_ARN CODEPIPELINE_NAME; do
+            eval "val=\${$v:-}"
+            if [[ -z "${val}" ]]; then
+              echo "ERROR: GitHub Actions variable '$v' is empty."
+              echo "Set it under Settings → Secrets and variables → Actions → Variables"
+              missing=1
+            else
+              echo "$v is set"
+            fi
+          done
+          exit "$missing"
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          CODEPIPELINE_NAME: ${{ vars.CODEPIPELINE_NAME }}
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-controlled-deploy
 
       - name: Start CodePipeline (approval still required)
         env:
           MODULE_PATH: ${{ matrix.module_path }}
+          CODEPIPELINE_NAME: ${{ vars.CODEPIPELINE_NAME }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
         run: |
           set -euo pipefail
           echo "Starting ${CODEPIPELINE_NAME} with MODULE_PATH=${MODULE_PATH}"
