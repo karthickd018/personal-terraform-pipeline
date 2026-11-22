@@ -48,3 +48,31 @@ aws codepipeline start-pipeline-execution \
   --variables name=MODULE_PATH,value=<environment-deployments/dev/dev-s3>
 EOT
 }
+
+output "github_actions_plan_role_arn" {
+  description = "IAM role ARN for GitHub Actions PR terraform plan (null when ENABLE_GITHUB_ACTIONS_CI = false)"
+  value       = try(aws_iam_role.github_plan[0].arn, null)
+}
+
+output "github_actions_deploy_role_arn" {
+  description = "IAM role ARN for GitHub Actions to start CodePipeline (null when ENABLE_GITHUB_ACTIONS_CI = false)"
+  value       = try(aws_iam_role.github_deploy[0].arn, null)
+}
+
+output "github_actions_setup_hint" {
+  description = "Repo variables / secrets to set after apply so workflows can assume the OIDC roles"
+  value = (
+    var.ENABLE_GITHUB_ACTIONS_CI
+    ? join("\n", [
+      "",
+      "# ── GitHub repo → Settings → Secrets and variables → Actions → Variables ──",
+      "AWS_REGION                 = ${var.REGION}",
+      "AWS_PLAN_ROLE_ARN          = ${try(aws_iam_role.github_plan[0].arn, "")}",
+      "AWS_DEPLOY_ROLE_ARN        = ${try(aws_iam_role.github_deploy[0].arn, "")}",
+      "EXISTING_S3_BUCKET         = ${var.EXISTING_S3_BUCKET}",
+      "CODEPIPELINE_NAME          = ${aws_codepipeline.terraform.name}",
+      "TERRAFORM_VERSION          = ${var.TERRAFORM_VERSION}",
+    ])
+    : "ENABLE_GITHUB_ACTIONS_CI is false — no GitHub Actions roles created."
+  )
+}

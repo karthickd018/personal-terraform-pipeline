@@ -25,3 +25,7 @@ ENABLE_CHATBOT     = false
 TEAMS_WORKSPACE_ID = ""
 TEAMS_CHANNEL_ID   = ""
 TEAMS_TENANT_ID    = ""
+
+ENABLE_GITHUB_ACTIONS_CI = true
+# Leave empty to create OIDC provider; set ARN if account already has one
+GITHUB_OIDC_PROVIDER_ARN = ""

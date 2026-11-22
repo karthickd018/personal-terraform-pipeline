@@ -61,6 +61,25 @@ variable "GITHUB_BRANCH" {
 }
 
 # ─────────────────────────────────────────────
+# GitHub Actions CI / CD (OIDC)
+# ─────────────────────────────────────────────
+
+variable "ENABLE_GITHUB_ACTIONS_CI" {
+  description = "Create IAM roles for GitHub Actions: PR terraform plan (CI) and controlled CodePipeline start (CD)."
+  type        = bool
+  default     = true
+}
+
+variable "GITHUB_OIDC_PROVIDER_ARN" {
+  description = <<EOT
+Existing GitHub OIDC provider ARN in this account (iam::oidc-provider/token.actions.githubusercontent.com).
+Leave empty to create a new provider. Set this if the account already has one (only one provider URL is allowed).
+EOT
+  type        = string
+  default     = ""
+}
+
+# ─────────────────────────────────────────────
 # Tooling versions — pin for reproducibility
 # ─────────────────────────────────────────────
 

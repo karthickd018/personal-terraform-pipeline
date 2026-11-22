@@ -1,9 +1,15 @@
 # ─────────────────────────────────────────────────────────────────
 # Universal Terraform Pipeline (personal-terraform-pipeline)
 #
-# MANUAL TRIGGER:
-#   Console → CodePipeline → <COMMON_NAME>-<ENVIRONMENT>-deployment-pipeline
-#            → Release change → set MODULE_PATH
+# CI / CD model:
+#   CI (automatic)  — GitHub Actions on pull_request runs terraform plan
+#                     for changed environment-deployments/* paths only.
+#   CD (controlled) — GitHub Actions on push to main / workflow_dispatch
+#                     starts THIS pipeline with MODULE_PATH.
+#                     Manual Approval stage is still required before apply.
+#
+# Manual trigger (fallback):
+#   Console → Release change → set MODULE_PATH
 #   CLI:
 #     aws codepipeline start-pipeline-execution \
 #       --name <pipeline> \

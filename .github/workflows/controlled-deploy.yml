@@ -1,0 +1,113 @@
+# CD — controlled deployment
+# On merge to main (changed paths) or manual workflow_dispatch:
+#   starts CodePipeline with MODULE_PATH.
+# CodePipeline still requires the manual Approval stage before apply.
+
+name: Controlled Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "environment-deployments/**"
+      - "reusable-modules/**"
+  workflow_dispatch:
+    inputs:
+      module_path:
+        description: "MODULE_PATH to deploy (e.g. environment-deployments/dev/dev-s3)"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  CODEPIPELINE_NAME: ${{ vars.CODEPIPELINE_NAME }}
+
+jobs:
+  detect-modules:
+    name: Detect modules to deploy
+    runs-on: ubuntu-latest
+    outputs:
+      modules: ${{ steps.set.outputs.modules }}
+      has_modules: ${{ steps.set.outputs.has_modules }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve MODULE_PATHs
+        id: set
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            MODULE="${{ inputs.module_path }}"
+            if [[ ! -d "$MODULE" ]]; then
+              echo "ERROR: MODULE_PATH '${MODULE}' not found in repo"
+              exit 1
+            fi
+            JSON=$(jq -nc --arg m "$MODULE" '[$m]')
+            echo "has_modules=true" >> "$GITHUB_OUTPUT"
+            echo "modules=${JSON}" >> "$GITHUB_OUTPUT"
+            echo "Manual deploy: ${JSON}"
+            exit 0
+          fi
+
+          chmod +x deployment-pipeline/scripts/detect-changed-modules.sh
+          BASE="${{ github.event.before }}"
+          HEAD="${{ github.sha }}"
+
+          # First push / force edge case
+          if [[ "$BASE" == "0000000000000000000000000000000000000000" ]]; then
+            BASE=$(git rev-list --max-parents=0 HEAD | tail -1)
+          fi
+
+          mapfile -t MODULES < <(deployment-pipeline/scripts/detect-changed-modules.sh "$BASE" "$HEAD" || true)
+
+          if [[ ${#MODULES[@]} -eq 0 ]]; then
+            echo "has_modules=false" >> "$GITHUB_OUTPUT"
+            echo "modules=[]" >> "$GITHUB_OUTPUT"
+            echo "No modules to deploy."
+            exit 0
+          fi
+
+          JSON=$(printf '%s\n' "${MODULES[@]}" | jq -R . | jq -s -c .)
+          echo "has_modules=true" >> "$GITHUB_OUTPUT"
+          echo "modules=${JSON}" >> "$GITHUB_OUTPUT"
+          echo "Modules to deploy: ${JSON}"
+
+  start-pipeline:
+    name: Start pipeline ${{ matrix.module_path }}
+    needs: detect-modules
+    if: needs.detect-modules.outputs.has_modules == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        module_path: ${{ fromJson(needs.detect-modules.outputs.modules) }}
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Start CodePipeline (approval still required)
+        env:
+          MODULE_PATH: ${{ matrix.module_path }}
+        run: |
+          set -euo pipefail
+          echo "Starting ${CODEPIPELINE_NAME} with MODULE_PATH=${MODULE_PATH}"
+          EXEC_ID=$(aws codepipeline start-pipeline-execution \
+            --name "${CODEPIPELINE_NAME}" \
+            --variables name=MODULE_PATH,value="${MODULE_PATH}" \
+            --query 'pipelineExecutionId' \
+            --output text)
+          echo "Started execution: ${EXEC_ID}"
+          echo "Approve in Console before apply:"
+          echo "https://${AWS_REGION}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${CODEPIPELINE_NAME}/view"

@@ -15,6 +15,8 @@ Template reuse checklist for any project / AWS account.
 | 7 | `GITHUB_REPO_ID` | `karthickd018/personal-terraform-pipeline` | tfvars |
 | 8 | `GITHUB_BRANCH` | `main` | tfvars |
 | 9 | `ENABLE_CHATBOT` | `false` | tfvars |
+| 10 | `ENABLE_GITHUB_ACTIONS_CI` | `true` | tfvars — PR plan + controlled deploy OIDC roles |
+| 11 | `GITHUB_OIDC_PROVIDER_ARN` | _(empty = create)_ | set if account already has GitHub OIDC provider |
 
 ### `state.tf` files updated (same bucket + region)
 
@@ -46,6 +48,7 @@ Template reuse checklist for any project / AWS account.
 | Push code to GitHub | Pipeline Source stage | Repo: `karthickd018/personal-terraform-pipeline` |
 | Confirm bucket has `env/` + `statefile/` prefixes | State + tfvars | Create empty prefixes if missing |
 | Chatbot / Teams IDs | Notifications to Teams | Skipped (`ENABLE_CHATBOT=false`) |
+| GitHub Actions repo variables | PR plan + controlled deploy | Set from `terraform output github_actions_setup_hint` |
 
 ---
 

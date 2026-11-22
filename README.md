@@ -1,6 +1,9 @@
 # personal-terraform-pipeline
 
-Reusable **multi-module Terraform deployment pipeline template**.
+Reusable **multi-module Terraform deployment pipeline** with:
+
+- **CI (automatic)** — PR → `terraform plan` for changed paths only  
+- **CD (controlled)** — merge / manual dispatch → CodePipeline → **manual approval** → apply  
 
 | Staging (`cc-terraform-staging`) | This template |
 |---|---|
@@ -8,7 +11,29 @@ Reusable **multi-module Terraform deployment pipeline template**.
 | `module-call/` | `environment-deployments/` |
 | `terraform-apply-pipeline/` | `deployment-pipeline/` |
 
-Independent from `terraform-pipeline-template`.
+`cc-terraform-staging` is **not** modified by this template.
+
+---
+
+## CI / CD flow
+
+```
+Pull Request (environment-deployments/** or reusable-modules/**)
+        │
+        ▼
+ GitHub Actions: PR Terraform Plan     ← automatic CI (plan only)
+        │
+        ▼
+ Merge to main  ──or──  workflow_dispatch (pick MODULE_PATH)
+        │
+        ▼
+ GitHub Actions: Controlled Deploy     ← starts CodePipeline
+        │
+        ▼
+ CodePipeline: Source → Validate/Plan → Approval → Apply
+                                      ▲
+                                      └── human approval required
+```
 
 ---
 
@@ -23,52 +48,46 @@ Independent from `terraform-pipeline-template`.
 | State/tfvars bucket | `staging-terraform-tfstate-bucket` |
 | GitHub | `karthickd018/personal-terraform-pipeline` (`main`) |
 | Chatbot | disabled |
+| GitHub Actions CI | enabled (OIDC roles) |
 
 Full mapping: **[ACCOUNT_CONFIG.md](./ACCOUNT_CONFIG.md)**
 
 ---
 
-## Changes applied from your values
+## Setup after `terraform apply` (deployment-pipeline)
 
-1. Wrote `deployment-pipeline/example.tfvars` and `deployment-pipeline/terraform.tfvars`
-2. Set all `state.tf` backends to bucket `staging-terraform-tfstate-bucket` / region `ap-south-1`
-3. Converted your S3 ARN → bucket **name** (`staging-terraform-tfstate-bucket`)
-4. Filled S3 module example bucket names with account id suffix
-5. Left EC2 AMI as placeholder until you provide one
-6. Updated `ACCOUNT_CONFIG.md` with filled values + blank sheet for next account
-
----
-
-## What is enough vs still needed
-
-| Goal | Enough with current values? | Still needed |
-|---|---|---|
-| Bootstrap / apply `deployment-pipeline` | **Yes** | Push this folder to GitHub; ensure CodeStar connection is Available |
-| Deploy `dev-s3` via pipeline | Almost | Upload `examples/env/dev-s3.tfvars` to S3 `env/dev-s3.tfvars` |
-| Deploy EC2 via pipeline | No | Provide `ami_id` for `ap-south-1`, then upload EC2 tfvars |
-
----
-
-## Next steps
-
-1. Push this folder to `karthickd018/personal-terraform-pipeline` (`main`)
-2. Confirm S3 bucket exists and has prefixes `env/` and `statefile/`
-3. Apply pipeline:
+1. Apply pipeline (creates OIDC roles when `ENABLE_GITHUB_ACTIONS_CI = true`):
 
 ```bash
 cd deployment-pipeline
 terraform init
 terraform apply
+terraform output github_actions_setup_hint
 ```
 
-4. Upload first module tfvars (when ready):
+2. In GitHub → **Settings → Secrets and variables → Actions → Variables**, add:
+
+| Variable | Example |
+|---|---|
+| `AWS_REGION` | `ap-south-1` |
+| `AWS_PLAN_ROLE_ARN` | from `github_actions_plan_role_arn` |
+| `AWS_DEPLOY_ROLE_ARN` | from `github_actions_deploy_role_arn` |
+| `EXISTING_S3_BUCKET` | `staging-terraform-tfstate-bucket` |
+| `CODEPIPELINE_NAME` | `personal-staging-deployment-pipeline` |
+| `TERRAFORM_VERSION` | `1.9.8` |
+
+3. Upload module tfvars (once per module):
 
 ```bash
 aws s3 cp examples/env/dev-s3.tfvars \
   s3://staging-terraform-tfstate-bucket/env/dev-s3.tfvars
 ```
 
-5. Trigger:
+4. Open a PR that changes `environment-deployments/...` → plan runs automatically.  
+5. Merge to `main` → CodePipeline starts → **approve** in Console → apply.  
+6. Or run **Actions → Controlled Deploy → Run workflow** and set `MODULE_PATH`.
+
+Manual CLI fallback (unchanged):
 
 ```bash
 aws codepipeline start-pipeline-execution \
@@ -82,9 +101,15 @@ aws codepipeline start-pipeline-execution \
 
 ```
 personal-terraform-pipeline/
-├── reusable-modules/s3 + ec2
-├── environment-deployments/dev + prod
+├── .github/workflows/
+│   ├── pr-terraform-plan.yml      # CI — PR plan
+│   └── controlled-deploy.yml      # CD — start CodePipeline
+├── reusable-modules/
+├── environment-deployments/
 ├── deployment-pipeline/
+│   ├── github_oidc.tf             # OIDC IAM roles
+│   ├── scripts/detect-changed-modules.sh
+│   └── ...
 ├── examples/env/
 ├── ACCOUNT_CONFIG.md
 └── README.md

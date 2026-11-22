@@ -1,0 +1,135 @@
+# CI — automatic terraform plan on PRs for changed module paths only.
+# Does NOT apply. Apply stays in CodePipeline behind manual approval.
+
+name: PR Terraform Plan
+
+on:
+  pull_request:
+    paths:
+      - "environment-deployments/**"
+      - "reusable-modules/**"
+      - "deployment-pipeline/scripts/detect-changed-modules.sh"
+      - ".github/workflows/pr-terraform-plan.yml"
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  EXISTING_S3_BUCKET: ${{ vars.EXISTING_S3_BUCKET }}
+  TF_VERSION: ${{ vars.TERRAFORM_VERSION || '1.9.8' }}
+
+jobs:
+  detect-modules:
+    name: Detect changed modules
+    runs-on: ubuntu-latest
+    outputs:
+      modules: ${{ steps.set.outputs.modules }}
+      has_modules: ${{ steps.set.outputs.has_modules }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find changed MODULE_PATHs
+        id: set
+        run: |
+          chmod +x deployment-pipeline/scripts/detect-changed-modules.sh
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          mapfile -t MODULES < <(deployment-pipeline/scripts/detect-changed-modules.sh "$BASE" "$HEAD" || true)
+
+          if [[ ${#MODULES[@]} -eq 0 ]]; then
+            echo "has_modules=false" >> "$GITHUB_OUTPUT"
+            echo "modules=[]" >> "$GITHUB_OUTPUT"
+            echo "No modules to plan."
+            exit 0
+          fi
+
+          JSON=$(printf '%s\n' "${MODULES[@]}" | jq -R . | jq -s -c .)
+          echo "has_modules=true" >> "$GITHUB_OUTPUT"
+          echo "modules=${JSON}" >> "$GITHUB_OUTPUT"
+          echo "Modules to plan: ${JSON}"
+
+  plan:
+    name: Plan ${{ matrix.module_path }}
+    needs: detect-modules
+    if: needs.detect-modules.outputs.has_modules == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module_path: ${{ fromJson(needs.detect-modules.outputs.modules) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Download tfvars + plan
+        id: tf
+        env:
+          MODULE_PATH: ${{ matrix.module_path }}
+        run: |
+          set -euo pipefail
+          MODULE_NAME=$(basename "$MODULE_PATH")
+          echo "MODULE_PATH=${MODULE_PATH}"
+          echo "MODULE_NAME=${MODULE_NAME}"
+
+          if [[ ! -d "$MODULE_PATH" ]]; then
+            echo "ERROR: ${MODULE_PATH} not found"
+            exit 1
+          fi
+
+          aws s3 cp "s3://${EXISTING_S3_BUCKET}/env/${MODULE_NAME}.tfvars" ./module.tfvars
+
+          cd "$MODULE_PATH"
+          terraform init -input=false
+          terraform fmt -check -recursive || true
+          terraform validate
+          terraform plan -var-file="${GITHUB_WORKSPACE}/module.tfvars" -input=false -no-color -out=tfplan
+          terraform show -no-color tfplan > "${GITHUB_WORKSPACE}/tfplan-${MODULE_NAME}.txt"
+          echo "plan_file=tfplan-${MODULE_NAME}.txt" >> "$GITHUB_OUTPUT"
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ strategy.job-index }}
+          path: tfplan-*.txt
+          if-no-files-found: ignore
+
+      - name: Comment plan summary on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const modulePath = '${{ matrix.module_path }}';
+            const name = modulePath.split('/').pop();
+            const file = `tfplan-${name}.txt`;
+            let body = `### Terraform plan — \`${modulePath}\`\n\n`;
+            if (fs.existsSync(file)) {
+              const text = fs.readFileSync(file, 'utf8');
+              const lines = text.trim().split('\n');
+              const tail = lines.slice(-60).join('\n');
+              body += `<details><summary>Plan summary (last 60 lines)</summary>\n\n\`\`\`\n${tail}\n\`\`\`\n</details>`;
+            } else {
+              body += '_Plan file not found._';
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
