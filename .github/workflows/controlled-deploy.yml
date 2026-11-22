@@ -85,6 +85,9 @@ jobs:
     needs: detect-modules
     if: needs.detect-modules.outputs.has_modules == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -115,7 +118,8 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          # Global STS for OIDC assume — then CLI calls use AWS_REGION below
+          aws-region: us-east-1
           role-session-name: gha-controlled-deploy
 
       - name: Start CodePipeline (approval still required)
