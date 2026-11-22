@@ -9,9 +9,11 @@ module "s3" {
 }
 
 output "bucket_id" {
-  value = module.s3.bucket_id
+  description = "ID of the dev S3 bucket"
+  value       = module.s3.bucket_id
 }
 
 output "bucket_arn" {
-  value = module.s3.bucket_arn
+  description = "ARN of the dev S3 bucket"
+  value       = module.s3.bucket_arn
 }

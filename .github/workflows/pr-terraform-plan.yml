@@ -58,6 +58,11 @@ jobs:
     needs: detect-modules
     if: needs.detect-modules.outputs.has_modules == 'true'
     runs-on: ubuntu-latest
+    # Explicit job permissions — matrix jobs can miss workflow-level id-token in some runners
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
@@ -79,18 +84,38 @@ jobs:
               echo "$v is set"
             fi
           done
+          echo "Role to assume: ${AWS_PLAN_ROLE_ARN}"
           exit "$missing"
         env:
           AWS_REGION: ${{ vars.AWS_REGION }}
           AWS_PLAN_ROLE_ARN: ${{ vars.AWS_PLAN_ROLE_ARN }}
           EXISTING_S3_BUCKET: ${{ vars.EXISTING_S3_BUCKET }}
 
+      - name: Debug OIDC token claims
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = await core.getIDToken('sts.amazonaws.com');
+            const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
+            console.log('OIDC claims:', JSON.stringify({
+              iss: payload.iss,
+              aud: payload.aud,
+              sub: payload.sub,
+              repository: payload.repository,
+              repository_owner: payload.repository_owner,
+              job_workflow_ref: payload.job_workflow_ref,
+            }, null, 2));
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          # Use global STS for OIDC assume — avoids regional STS OIDC edge cases
+          aws-region: us-east-1
           role-session-name: gha-pr-terraform-plan
+
+      - name: Set working AWS region for Terraform
+        run: echo "AWS_REGION=${{ vars.AWS_REGION }}" >> "$GITHUB_ENV" && echo "AWS_DEFAULT_REGION=${{ vars.AWS_REGION }}" >> "$GITHUB_ENV"
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
